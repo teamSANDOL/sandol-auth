@@ -88,6 +88,9 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
     environment:
       DATA_SOURCE_NAME: "postgresql://sandol_exporter:${PG_EXPORTER_PASSWORD}@keycloak-db:5432/keycloak?sslmode=disable"
+    # 메인 서버 prometheus가 스크레이프하는 포트. 기본 루프백.
+    ports:
+      - "${AUTH_BIND_ADDR:-127.0.0.1}:9187:9187"
     depends_on:
       - keycloak-db
     restart: always
