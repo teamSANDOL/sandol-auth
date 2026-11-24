@@ -68,6 +68,6 @@ docker compose up -d
 
 - `docker compose up`은 `db-backup`을 매번 다시 실행해 덤프를 한 벌 더 만듭니다(보관 개수 초과분은 삭제).
 - gateway는 이름으로 keycloak·auth-relay를 찾습니다. 3단계에서 컨테이너가 새로 만들어져도 gateway 재시작 없이 응답했습니다(테스트 서버).
-- 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다. 이후 `docker compose down -v`로도 외부 프로젝트 볼륨은 지워지지 않지만, sandol-auth에서 `down -v`는 하지 않습니다.
+- 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다(테스트 서버에서 전환 후에도 볼륨 유지 확인). sandol-auth에서 `down -v`는 하지 않습니다.
 - `prometheus.yaml`의 `postgres-exporter-keycloak:9187`은 colocated에서 `sandol_network`로 풀립니다. Keycloak을 다른 서버로 옮기면 target을 바꿉니다.
 - 새 서버로 옮길 때: 이 레포만 clone하고 단독 기동하되, 기존 데이터는 `pre-split` 덤프(또는 `docker-compose.auth-restore.yml` import)로 복원한 뒤 gateway upstream을 새 주소로 바꿉니다(범위 밖 작업).
