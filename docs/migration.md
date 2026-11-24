@@ -10,6 +10,7 @@ Keycloak 스택을 루트 compose(`tuk_sandol_team`)에서 이 레포의 독립 
 3. `.env`를 만듭니다. 루트 `.env`에서 `KC_DB_USERNAME`, `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD`, `PG_EXPORTER_PASSWORD`, `SANDOL_DATA_DIR`, `BACKUP_KEEP`를 같은 값으로 복사하고 `KC_PUBLIC_URL=https://<SERVICE_DOMAIN>/auth`를 추가합니다. `COMPOSE_PROJECT_NAME`은 복사하지 않습니다.
 4. 이름을 확인해 `.env`에 반영합니다: `docker volume ls | grep keycloak`(`KEYCLOAK_DB_VOLUME`, `KEYCLOAK_DATA_VOLUME`), `docker network ls | grep sandol`(`SANDOL_NETWORK_NAME`).
 5. `sandol-auth-relay/.env`를 루트의 같은 파일에서 복사합니다.
+   `.env`에 `COMPOSE_FILE=docker-compose.yml:docker-compose.colocated.yml`(`.env.example` 기본값)이 있는지 확인합니다. 없으면 평범한 `docker compose up -d`가 오버라이드 없이 떠서 keycloak·auth-relay가 루트 네트워크에서 빠집니다. 새 서버 단독 기동 시에는 이 줄을 제거합니다.
 6. 전환 전 기준값을 기록합니다: realm 목록, 사용자 수(`select count(*) from user_entity`), issuer(`/auth/realms/Sandori/.well-known/openid-configuration`의 `issuer`). 개인정보는 기록하지 않고 개수만 봅니다.
 
 ```bash
@@ -18,11 +19,22 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q  
 
 ## 전환 (순서 중요)
 
+> 순서 원칙: **sandol-auth가 healthy가 된 뒤에 루트를 `up`합니다.** meal-service는 기동 시 Keycloak에서 서비스 계정을 확인하고 실패하면 종료하며, gateway가 meal-service healthy를 기다리므로 루트 `up`이 중단됩니다.
+
 1. **덤프**: 루트 변경을 적용하기 전에 Keycloak DB를 덤프합니다.
    ```bash
-   mkdir -p $SANDOL_DATA_DIR/backups-auth/pre-split
-   docker exec keycloak-db sh -c 'pg_dump -U "$POSTGRES_USER" -d keycloak -Fc' > $SANDOL_DATA_DIR/backups-auth/pre-split/keycloak.dump
+   set -euo pipefail
+   : "${SANDOL_DATA_DIR:?SANDOL_DATA_DIR 필요}"
+   DEST="$SANDOL_DATA_DIR/backups-auth/pre-split"
+   mkdir -p "$DEST"
+   docker exec keycloak-db sh -c 'pg_dump -U "$POSTGRES_USER" -d keycloak -Fc -f /tmp/pre-split.dump'
+   docker cp keycloak-db:/tmp/pre-split.dump "$DEST/keycloak.dump"
+   docker exec keycloak-db rm /tmp/pre-split.dump
+   # 검증: 목차를 읽을 수 있고 크기가 0이 아니어야 한다
+   docker run --rm -v "$DEST:/b:ro" postgres:16-alpine pg_restore -l /b/keycloak.dump | wc -l
+   test -s "$DEST/keycloak.dump" && ls -l "$DEST/keycloak.dump"
    ```
+   실패하면 다음 단계로 넘어가지 않습니다. 롤백에서 쓰는 파일도 이 경로(`$SANDOL_DATA_DIR/backups-auth/pre-split/keycloak.dump`)입니다.
 2. **루트의 Keycloak 컨테이너 정지·삭제**(볼륨 유지, `-v` 금지). 변경 적용 전의 루트 compose(이전 커밋)로 실행합니다.
    ```bash
    cd ~/tuk_sandol_team
@@ -62,7 +74,7 @@ git submodule update --init
 docker compose up -d
 ```
 
-이후 위 5단계 확인 항목을 같은 방식으로 확인합니다. DB가 손상된 경우에만 `pre-split/keycloak.dump`로 복원합니다(`pg_restore --clean --if-exists`).
+이후 위 5단계 확인 항목을 같은 방식으로 확인합니다. DB가 손상된 경우에만 `$SANDOL_DATA_DIR/backups-auth/pre-split/keycloak.dump`로 복원합니다(`pg_restore --clean --if-exists`).
 
 ## 알아둘 점
 

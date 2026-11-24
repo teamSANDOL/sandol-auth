@@ -1,3 +1,8 @@
+# 경고: 운영 Keycloak DB 볼륨(keycloak_db_data)을 직접 마운트해 realm export를 수행한다.
+# 실행 전에 운영 keycloak·keycloak-db를 먼저 멈춘다(동시 사용·컨테이너 이름 충돌 방지).
+# 사용: docker compose -f docker-compose.auth-bak.yml up  (종료 후 down, -v 금지)
+name: sandol-auth-backup
+
 services:
   keycloak-db:
     container_name: keycloak-db-backup

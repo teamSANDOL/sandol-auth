@@ -42,6 +42,8 @@ cp <기존>/sandol-auth-relay/.env sandol-auth-relay/.env   # auth-relay 설정
 
 ## 단독 기동(새 서버)
 
+`.env`에 `COMPOSE_FILE` 줄이 없어야 합니다(`.env.example`의 전환 기간용 줄은 제거).
+
 ```bash
 docker compose up -d
 ```
@@ -54,9 +56,13 @@ docker compose up -d
 
 루트 프로젝트(`tuk_sandol_team`)가 한 번이라도 떠서 `sandol_network`, `sandol_keycloak_edge` 네트워크와 Keycloak 볼륨이 있어야 합니다.
 
+`.env`에 `COMPOSE_FILE=docker-compose.yml:docker-compose.colocated.yml`을 두면(`.env.example` 기본값) 평범한 `docker compose up -d`도 오버라이드를 적용합니다. 이 값이 없으면 오버라이드가 빠져 keycloak·auth-relay가 루트 네트워크에서 떨어집니다.
+
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d   # COMPOSE_FILE을 안 쓸 때
 ```
+
+기동 순서: sandol-auth가 healthy가 된 뒤에 루트를 `up`합니다(meal-service가 기동 시 Keycloak 서비스 계정을 확인하다 실패하면 종료하고, gateway가 meal-service healthy를 기다리기 때문).
 
 - keycloak·auth-relay·exporter가 루트의 `sandol_network`에 붙어 다른 서비스가 `http://keycloak:8080/auth`, `http://auth-relay:8000/relay`로 계속 접근합니다.
 - keycloak은 `sandol_keycloak_edge`에 `keycloak-edge` 별칭으로 붙습니다(gateway가 이 이름으로 프록시, `KC_PROXY_TRUSTED_ADDRESSES`는 이 서브넷).
@@ -71,7 +77,9 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d
 ## 백업
 
 `db-backup`은 `up`할 때마다 `${SANDOL_AUTH_BACKUP_DIR:-${SANDOL_DATA_DIR}/backups-auth}/<UTC 타임스탬프>/keycloak.dump`를 만듭니다. 보관 개수는 `BACKUP_KEEP`(기본 10). 수동 실행: `docker compose run --rm db-backup`.
-realm 단위 export/import는 `docker-compose.auth-bak.yml`, `docker-compose.auth-restore.yml`을 사용합니다.
+realm 단위 export/import는 `docker-compose.auth-bak.yml`(`name: sandol-auth-backup`), `docker-compose.auth-restore.yml`(`name: sandol-auth-restore`)을 사용합니다.
+
+> **경고**: 두 파일은 운영 Keycloak DB 볼륨을 직접 씁니다. 실행 전에 운영 `keycloak`·`keycloak-db`를 먼저 멈추세요(같은 볼륨 동시 사용 방지, 컨테이너 이름 `keycloak-db` 계열 충돌 방지). 반드시 `-f`로 해당 파일을 지정해 단독으로 실행하고, 끝나면 `down`(`-v` 금지) 후 운영을 다시 올립니다.
 
 ## 주의
 
