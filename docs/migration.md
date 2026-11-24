@@ -82,4 +82,17 @@ docker compose up -d
 - gateway는 이름으로 keycloak·auth-relay를 찾습니다. 3단계에서 컨테이너가 새로 만들어져도 gateway 재시작 없이 응답했습니다(테스트 서버).
 - 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다(테스트 서버에서 전환 후에도 볼륨 유지 확인). sandol-auth에서 `down -v`는 하지 않습니다.
 - `prometheus.yaml`의 `postgres-exporter-keycloak:9187`은 colocated에서 `sandol_network`로 풀립니다. Keycloak을 다른 서버로 옮기면 target을 바꿉니다.
-- 새 서버로 옮길 때: 이 레포만 clone하고 단독 기동하되, 기존 데이터는 `pre-split` 덤프(또는 `docker-compose.auth-restore.yml` import)로 복원한 뒤 gateway upstream을 새 주소로 바꿉니다(범위 밖 작업).
+- 새 서버로 옮길 때: 이 레포만 clone하고 단독 기동하되, 기존 데이터는 `pre-split` 덤프(또는 `docker-compose.auth-restore.yml` import)로 복원합니다. 아래 "별도 서버로 분리" 설정을 적용합니다.
+
+## 별도 서버로 분리할 때 설정 (TASK-186)
+
+인증 서버(새 서버)
+- `.env`: `COMPOSE_FILE` 줄 제거, `AUTH_BIND_ADDR=<인증 서버의 사설 IP>`, `KEYCLOAK_EDGE_SUBNET=<메인 서버 사설IP>/32`(= `KC_PROXY_TRUSTED_ADDRESSES`: 메인 서버 gateway의 출발지 주소. 서브넷이 아닌 이 값이 틀리면 XFF·Host 헤더를 신뢰하지 않음), `KC_PUBLIC_URL` 유지(issuer 불변).
+- 방화벽: 8080(Keycloak)·8000(relay)은 **메인 서버 IP만 허용**. 9000(관리·health)은 publish하지 않으며 열지 않는다. 인증 서버 자신의 DB 5432도 publish 없음.
+- 기동 후 인증 서버에서 `curl -fsS http://$AUTH_BIND_ADDR:8000/relay/health`, `curl -fsS http://$AUTH_BIND_ADDR:8080/auth/realms/Sandori/.well-known/openid-configuration`.
+
+메인 서버(루트)
+- 루트 `.env`: `KEYCLOAK_UPSTREAM=<인증 서버 사설IP>:8080`, `AUTH_RELAY_UPSTREAM=<인증 서버 사설IP>:8000` → gateway 재시작. 호스트명 대신 IP도 동작한다.
+- kakao-bot `.env`: `AUTH_RELAY_URL=http://<인증 서버 사설IP>:8000/relay`(relay 포트 직접 호출). `POST /relay/issue_login_link`는 게이트웨이 공개 경로에서 404로 막혀 있어 gateway 경유로는 호출되지 않는다.
+- meal-service·static-info 등 내부 서비스의 `KC_INTERNAL_URL`도 `http://<인증 서버 사설IP>:8080/auth`로 바꾸고 재기동한다.
+- 메인 서버에서 확인: `curl -fsS http://<인증 서버 사설IP>:8000/relay/health`, 공개 경로 `/auth/realms/Sandori/.well-known/openid-configuration`·`/relay/health` 200, `/relay/issue_login_link` 404.

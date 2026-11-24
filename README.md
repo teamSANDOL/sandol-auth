@@ -49,7 +49,10 @@ docker compose up -d
 ```
 
 - 볼륨이 없으면 빈 볼륨이 만들어져 **새 Keycloak**으로 뜹니다. 기존 데이터를 옮길 때는 먼저 `docs/migration.md`의 복원 절차(`docker-compose.auth-restore.yml`)를 따릅니다.
-- 이 compose는 포트를 호스트에 열지 않습니다. 앞단 프록시(gateway)가 `keycloak:8080/auth`, `auth-relay:8000/relay`에 닿도록 같은 네트워크에 붙이는 것은 별도 작업입니다(범위 밖).
+- keycloak 8080과 auth-relay 8000을 `${AUTH_BIND_ADDR:-127.0.0.1}`에 publish합니다(기본 루프백이라 외부에서 안 보임, colocated에서도 동일). 관리 포트 9000은 publish하지 않습니다.
+- 메인 서버가 닿게 하려면 `AUTH_BIND_ADDR`를 메인 서버와 통신하는 사설 IP로 바꾸고, 방화벽에서 **8080·8000은 메인 서버 IP만 허용**합니다(둘 다 인증 없이 앞단 프록시를 신뢰하는 구성이라 공개 금지).
+- `KC_PROXY_TRUSTED_ADDRESSES`(`KEYCLOAK_EDGE_SUBNET` 값)는 Keycloak에 접속하는 메인 서버 gateway의 출발지 주소여야 합니다. 분리 시 `<메인 서버 사설IP>/32`로 설정합니다. 틀리면 X-Forwarded-* 헤더를 신뢰하지 않아 issuer·리다이렉트가 어긋납니다.
+- 메인 서버 쪽 설정: gateway `KEYCLOAK_UPSTREAM=<인증 서버 사설IP>:8080`, `AUTH_RELAY_UPSTREAM=<인증 서버 사설IP>:8000`, kakao-bot `AUTH_RELAY_URL=http://<인증 서버 사설IP>:8000/relay`(gateway의 `/relay/issue_login_link`는 공개 경로에서 404라 직접 호출해야 함).
 - `KC_PUBLIC_URL`(예: `https://sandori.kr/auth`)이 issuer를 정합니다. 바꾸면 기존 토큰의 issuer가 달라집니다.
 
 ## 같은 서버에서 루트와 함께 기동(colocated)

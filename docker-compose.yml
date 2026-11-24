@@ -32,6 +32,9 @@ services:
     container_name: keycloak
     image: quay.io/keycloak/keycloak:26.8.1
     command: ["start"]
+    # 메인 서버 gateway가 닿는 포트. 기본 루프백이라 colocated에선 외부 노출 없음. 9000(관리)은 열지 않는다.
+    ports:
+      - "${AUTH_BIND_ADDR:-127.0.0.1}:8080:8080"
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
@@ -96,6 +99,9 @@ services:
     image: sandol-auth-relay:${TAG:-latest}
     env_file:
       - ./sandol-auth-relay/.env
+    # 메인 서버 kakao-bot이 서버 간으로 호출하는 포트(/relay/issue_login_link 포함). 기본 루프백.
+    ports:
+      - "${AUTH_BIND_ADDR:-127.0.0.1}:8000:8000"
     volumes:
       - ${SANDOL_DATA_DIR:-/home/ubuntu/data/sandol}/auth-relay/clients.json:/app/app/config/clients.json:ro
     restart: on-failure
