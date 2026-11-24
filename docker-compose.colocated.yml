@@ -1,0 +1,41 @@
+# 같은 서버에서 루트(tuk_sandol_team) 프로젝트와 함께 띄울 때만 쓴다(전환 기간).
+#   docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d
+# 새 서버에서 이 레포만 단독 기동할 때는 쓰지 않는다.
+#
+# - 루트의 sandol_network에 붙어 다른 서비스가 http://keycloak:8080/auth, http://auth-relay:8000/relay로 접근한다.
+# - keycloak은 루트가 만드는 keycloak_edge 네트워크에 keycloak-edge 별칭으로 붙는다(gateway 프록시 대상).
+# - 볼륨은 external로 바꿔, 기존 볼륨이 없으면 빈 볼륨을 만들지 않고 에러로 멈춘다.
+# 위 네트워크·볼륨은 루트 프로젝트가 만든 것이므로 루트가 한 번은 기동된 서버여야 한다.
+services:
+  keycloak:
+    networks:
+      default: {}
+      sandol_network: {}
+      keycloak_edge:
+        aliases:
+          - keycloak-edge
+  auth-relay:
+    networks:
+      default: {}
+      sandol_network: {}
+  # prometheus가 sandol_network에서 이름으로 스크레이프한다.
+  postgres-exporter-keycloak:
+    networks:
+      default: {}
+      sandol_network: {}
+
+networks:
+  sandol_network:
+    external: true
+    name: ${SANDOL_NETWORK_NAME:-sandol_team_sandol_network}
+  keycloak_edge:
+    external: true
+    name: ${KEYCLOAK_EDGE_NETWORK_NAME:-sandol_keycloak_edge}
+
+volumes:
+  keycloak_db_data:
+    external: true
+    name: ${KEYCLOAK_DB_VOLUME:-sandol_team_keycloak_db_data}
+  keycloak_data:
+    external: true
+    name: ${KEYCLOAK_DATA_VOLUME:-sandol_team_keycloak_data}
