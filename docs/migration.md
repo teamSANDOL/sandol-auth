@@ -109,14 +109,15 @@ docker compose up -d
 | 메인 | prometheus 설정 | exporter target | `postgres-exporter-keycloak:9187` → `<인증IP>:9187` |
 
 방화벽(인증 서버): 8080·8000·9187은 **메인 서버 IP만 허용**. 9000(관리·health)과 DB 5432는 publish하지 않으며 열지 않는다.
+Proxmox CT라면 CT net0에 `firewall=1`을 켜고 `/etc/pve/firewall/<VMID>.fw`에 `policy_in: DROP`, `IN ACCEPT -source <메인IP> -p tcp -dport 8080,8000,9187`, 관리 접속용 `IN ACCEPT ... -dport 22`(SSH 중계 주소), `IN ACCEPT -p icmp`를 둔다. 22를 빼면 접속이 끊기므로 먼저 허용 주소를 확인한다. 다른 LAN 주소에서 8080이 막히는지도 확인한다(테스트에서 메인 서버만 통과, Proxmox 호스트 등 다른 주소는 차단 확인).
 메인 서버 반영 후 gateway·static-info·meal·kakao-bot·prometheus를 재시작(또는 reload)한다.
 
 출발지 IP 확인(`/32` 전에 필수): 두 서버 사이에 NAT·터널(Cloudflare Tunnel, WireGuard 등)이 있으면 Keycloak이 보는 gateway의 출발지가 `<메인IP>`가 아닐 수 있다. 메인 서버에서 `curl -s -o /dev/null http://<인증IP>:8080/auth/realms/Sandori/.well-known/openid-configuration`을 한 번 호출한 뒤 인증 서버에서 실제 출발지를 본다.
 ```bash
-sudo ss -tn state established '( sport = :8080 )'            # 또는 sudo tcpdump -ni any 'tcp dst port 8080' -c 5
+sudo tcpdump -ni any 'tcp dst port 8080 and tcp[tcpflags] & tcp-syn != 0' -c 3   # 위 curl을 보내는 동안 실행(없으면 apt install tcpdump). ss는 연결이 이미 닫혀 비어 있기 쉽다
 docker compose logs --since 2m keycloak | grep -i -E 'forwarded|proxy' | head   # trusted 아니면 경고
 ```
-여기서 보인 주소(NAT 뒤라면 NAT 장비 주소)를 `/32`로 쓴다. 틀리면 Keycloak이 X-Forwarded-*를 무시해 issuer가 `http://<인증IP>:8080/auth` 쪽으로 어긋난다(.well-known의 `issuer`로 확인).
+여기서 보인 주소(NAT 뒤라면 NAT 장비 주소)를 `/32`로 쓴다. 첫 기동 때는 기본값(신뢰 안 됨)이므로, 값을 `.env`에 넣은 뒤 `docker compose up -d`로 keycloak을 다시 만든다. 틀리면 Keycloak이 X-Forwarded-*를 무시한다. 다만 `KC_HOSTNAME`이 전체 URL이라 **issuer는 신뢰 여부와 무관하게 바뀌지 않아** `.well-known`의 `issuer`로는 구분되지 않는다(테스트 서버에서 확인). 구분은 Keycloak에 직접 `X-Forwarded-Proto: https` 헤더를 붙여 `/auth/realms/Sandori/protocol/openid-connect/auth?client_id=<client>&response_type=code&scope=openid&code_challenge=<S256 값>&code_challenge_method=S256&redirect_uri=<등록된 URI>`를 호출하고 응답 `Set-Cookie`에 `Secure;SameSite=None`이 붙는지로 한다(신뢰되지 않으면 `Secure`가 없다). Keycloak 로그에 `forwarded|proxy|trusted` 경고가 없어야 한다.
 
 기동 후 확인(인증 서버, 변수 없이): `docker compose exec auth-relay curl -fsS http://localhost:8000/relay/health`, `ss -ltn | grep -E ':(8080|8000|9187)\b'`로 바인딩 주소가 `<인증IP>`(또는 기본 `127.0.0.1`)인지 본다.
 메인 서버 확인: `curl -fsS http://<인증IP>:8000/relay/health`, 공개 `/auth/realms/Sandori/.well-known/openid-configuration`·`/relay/health` 200, 공개 `/relay/issue_login_link` 404, kakao-bot 컨테이너에서 `AUTH_RELAY_URL`의 `/issue_login_link`가 405/422로 도달.
@@ -139,6 +140,7 @@ docker compose logs --since 2m keycloak | grep -i -E 'forwarded|proxy' | head   
        | python3 -c 'import sys,json;print(json.load(sys.stdin)["refresh_token"],end="")' > rt-${S##*:}.txt
    done
    ```
+   - online refresh_token은 발급 30분 뒤(`exp`-`iat`) 만료된다. 이전·롤백 확인이 30분을 넘기면 `invalid_grant: Token is not active`가 나오며 이는 이전 실패가 아니다. 확인 직전(30분 안)에 online 토큰을 새로 발급해 쓴다. offline 토큰은 영향 없다.
    - realm의 user profile에서 `fullname`이 필수라 속성을 줘야 합니다(없으면 `error-user-attribute-required`). 다른 필수 속성이 있으면 `kc get users/profile -r Sandori`로 확인합니다.
    - `offline_access`가 client 기본 scope에 있으면 online 요청도 Offline 토큰이 나옵니다. client의 default-client-scopes에서 `offline_access`를 빼 optional로 옮깁니다(`kc delete clients/<id>/default-client-scopes/<scopeId>`, `kc update clients/<id>/optional-client-scopes/<scopeId>`).
    - 기존 `.env`의 관리자 비밀번호가 `Invalid user credentials`이면(기존 realm에선 부트스트랩 값이 무시됨) 임시 관리자를 만듭니다: `docker exec -e KC_HTTP_MANAGEMENT_PORT=9001 -e P=<pw> keycloak sh -c '/opt/keycloak/bin/kc.sh bootstrap-admin user --username tmp-split-admin --password:env P --no-prompt'`(관리 포트 9000이 이미 쓰여 `9001` 필요). 이 계정도 마지막에 삭제합니다.
@@ -150,7 +152,7 @@ docker compose logs --since 2m keycloak | grep -i -E 'forwarded|proxy' | head   
      python3 -c 'import json,base64;j=json.load(open("/tmp/r.json"));p=j["access_token"].split(".")[1];p+="="*(-len(p)%4);print("iss",json.loads(base64.urlsafe_b64decode(p))["iss"]) if "access_token" in j else print("error",j.get("error"))'
    done; rm -f /tmp/r.json
    ```
-3. **정리**: 임시 사용자·client(·임시 관리자)를 `kc delete users/<id> -r Sandori`, `kc delete clients/<id> -r Sandori`(관리자는 `-r master`)로 지우고, 사용자 수(`select count(*) from user_entity`)가 전과 같은지 봅니다. `rt-*.txt`는 삭제합니다.
+3. **정리**: 임시 사용자·client(·임시 관리자)를 `kc delete users/<id> -r Sandori`, `kc delete clients/<id> -r Sandori`(관리자는 `-r master`; `-q username=`은 부분 일치라 `tmp-split-admin`이 `tmp-split-admin2`도 반환하므로 id를 확인하고 하나씩 지운다)로 지우고, 사용자 수(`select count(*) from user_entity`)가 전과 같은지 봅니다. `rt-*.txt`는 삭제합니다.
 
 테스트 서버 결과: 같은 서버 전환(단계 A)과 덤프·복원 이전(단계 B)에서 offline·online 모두 갱신 200, `iss` 불변이었습니다(issuer·`KC_PUBLIC_URL`이 같고 DB의 realm·키·세션이 그대로 복원되기 때문). 기존 서버로 롤백한 뒤에도 같은 토큰이 200이었습니다.
 
@@ -166,12 +168,17 @@ docker cp keycloak-db:/tmp/move.dump ./keycloak-move.dump && docker exec keycloa
 chmod 600 keycloak-move.dump
 scp keycloak-move.dump <새 서버>:~/sandol-auth/        # 사설망으로, 전송 후 양쪽 사본 삭제 계획
 
-# 2) 새 서버: 레포 clone·서브모듈·.env(단독: COMPOSE_FILE 줄 없음, AUTH_BIND_ADDR, KEYCLOAK_EDGE_SUBNET)·sandol-auth-relay/.env·clients.json 준비 후
+# 2) 새 서버: 레포 clone·서브모듈·.env(단독: COMPOSE_FILE 줄 없음, AUTH_BIND_ADDR, KEYCLOAK_EDGE_SUBNET)·sandol-auth-relay/.env 준비
+#    + clients.json을 `${SANDOL_DATA_DIR}/auth-relay/clients.json`에 복사(없으면 auth-relay 마운트 실패)
+#    + 이미지: 공개 이미지는 `docker compose pull keycloak-db keycloak postgres-exporter-keycloak`,
+#      auth-relay는 기존 서버에서 `docker save sandol-auth-relay:latest | gzip | ssh <새 서버> 'gunzip | docker load'`
+#      (KEYCLOAK_EDGE_SUBNET은 출발지 확인 전이라 기본값으로 두고, 메인 서버 값 변경 뒤 확인한 `/32`로 바꿔 `docker compose up -d`를 다시 실행)
 docker compose up -d keycloak-db            # 빈 볼륨이 생기고 DB가 healthy 될 때까지 대기
 docker cp keycloak-move.dump keycloak-db:/tmp/restore.dump
 docker exec keycloak-db sh -c 'pg_restore -U "$POSTGRES_USER" -d keycloak --clean --if-exists --exit-on-error /tmp/restore.dump; echo exit=$?'
 docker exec keycloak-db rm /tmp/restore.dump
 docker exec keycloak-db sh -c 'psql -U "$POSTGRES_USER" -d keycloak -tAc "select count(*) from user_entity"'   # 기존 서버 값과 같아야 함
+bash scripts/create-pg-exporter-role.sh     # exporter 롤은 덤프에 없다(아래 주의). 빠지면 pg_up 0
 
 # 3) 새 서버: 전체 기동 (db-backup → keycloak → auth-relay → exporter)
 docker compose up -d
@@ -184,5 +191,6 @@ docker compose up -d
 - 사용자 세션(online)·offline 세션도 DB에 있어 그대로 이어졌습니다.
 - **exporter는 복원 후 `pg_up 0`**입니다. `sandol_exporter` 롤은 클러스터 단위라 DB 덤프에 없으므로 새 DB에서 `scripts/create-pg-exporter-role.sh`를 실행해야 합니다. 같은 이유로 `PG_EXPORTER_PASSWORD`를 새 `.env`에 넣습니다.
 - 확장(extension)은 사용하지 않아 복원 문제가 없었습니다.
+- 별도 CT(2코어·4GB) 리허설(TASK-196): 복원 후 keycloak은 약 30초에 healthy, 공개 issuer 불변, static-info·meal의 JWKS·토큰 검증, gateway `/relay/health`, 공개 `/relay/issue_login_link` 404, kakao-bot→relay 422, 전환 전 offline·online refresh_token 갱신 200, `up{db="keycloak"}`=1을 확인했고 롤백 후 사용자 수가 같았다.
 
-**롤백(이전 실패 시)**: ① 메인 서버 변수를 원복합니다(`KEYCLOAK_UPSTREAM`·`AUTH_RELAY_UPSTREAM`·`KC_INTERNAL_URL`·kakao-bot `AUTH_RELAY_URL`·prometheus target을 기본값으로, gateway·static-info·meal·kakao-bot 재시작). ② 기존 서버에서 `docker compose up -d`로 sandol-auth를 다시 기동합니다(원래 볼륨을 쓰므로 기존 토큰 그대로 유효, 이전 도중 기존 서버가 쓰기를 받았다면 그 이후 변경은 새 서버에 없음). ③ 새 서버의 sandol-auth는 `docker compose down`(`-v` 금지). 새 서버가 이미 쓰기를 받았다면(로그인 등) 롤백 시 그만큼 기존 서버 DB와 어긋나므로, 이전은 기존 서버 정지 후 바로 전환하고 문제 시 즉시 롤백합니다.
+**롤백(이전 실패 시)**: 실행 순서는 **② → ① → ③**입니다. 기존 서버 Keycloak이 먼저 healthy여야 ①에서 재생성되는 meal-service(기동 시 Keycloak 확인 후 실패하면 종료)·gateway가 올라옵니다(테스트 서버에서 이 순서로 확인). ① 메인 서버 변수를 원복합니다(`KEYCLOAK_UPSTREAM`·`AUTH_RELAY_UPSTREAM`·`KC_INTERNAL_URL`·kakao-bot `AUTH_RELAY_URL`·prometheus target을 기본값으로, gateway·static-info·meal·kakao-bot·prometheus 재시작). `prometheus.yaml`은 추적 파일이므로 `git checkout -- <파일>`로 되돌리고, 백업을 `cp`로 되돌릴 때 파일 권한(644)이 바뀌면 prometheus가 `permission denied`로 재시작을 반복하니 확인한다. kakao-bot의 `KC_TOKEN_PURGE_ENABLED=false`도 확인 후 되돌린다. ② 기존 서버에서 `docker compose up -d`로 sandol-auth를 다시 기동합니다(원래 볼륨을 쓰므로 기존 토큰 그대로 유효, 이전 도중 기존 서버가 쓰기를 받았다면 그 이후 변경은 새 서버에 없음). ③ 새 서버의 sandol-auth는 `docker compose down`(`-v` 금지). 새 서버가 이미 쓰기를 받았다면(로그인 등) 롤백 시 그만큼 기존 서버 DB와 어긋나므로, 이전은 기존 서버 정지 후 바로 전환하고 문제 시 즉시 롤백합니다.
