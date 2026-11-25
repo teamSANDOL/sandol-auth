@@ -74,15 +74,18 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q  
 cd ~/sandol-auth
 docker compose -f docker-compose.yml -f docker-compose.colocated.yml down      # -v 금지
 cd ~/tuk_sandol_team
-git checkout <이관 이전 커밋>              # Keycloak 서비스가 있는 docker-compose.yml
+git checkout <이관 이전 커밋>              # Keycloak 서비스가 있는 docker-compose.yml. amqp healthcheck 수정(TASK-195)이 들어 있는 커밋이어야 한다(아래 주의)
 git submodule update --init
 docker compose up -d
 ```
+
+**롤백 대상 커밋 주의(TASK-195)**: 이관 이전 compose의 amqp healthcheck(`rabbitmq-diagnostics` 3회 호출, interval 10s·timeout 5s·start_period 없음)는 호출마다 Erlang VM을 띄워 유휴에도 약 2초, 서버 부하가 높으면(keycloak·DB 기동 중 load 8 이상) 5초를 넘겨 timeout이 된다. 5회 연속이면 amqp가 unhealthy가 되고 `docker compose up -d`가 `dependency failed to start: container amqp is unhealthy`로 중단돼 gateway·auth-relay가 만들어지지 않는다(테스트 서버에서 부하를 주어 재현). 수정은 amqp healthcheck를 TCP 점검(5672·15692)으로 바꾼 커밋이며, 롤백 대상은 이를 포함한 main 기반 커밋이어야 한다. 그렇지 않은 커밋으로 롤백해 중단되면 `--no-deps` 없이 amqp가 healthy가 된 뒤 `docker compose up -d`를 한 번 더 실행하면 된다(멱등).
 
 이후 위 5단계 확인 항목을 같은 방식으로 확인합니다. DB가 손상된 경우에만 `$SANDOL_DATA_DIR/backups-auth/pre-split/keycloak.dump`로 복원합니다(`pg_restore --clean --if-exists`).
 
 ## 알아둘 점
 
+- healthcheck 기동 속도(TASK-195): Docker는 첫 검사를 `interval` 뒤에 실행한다. keycloak(1m30s)·auth-relay(60s)는 기동 후 각각 90초·60초가 지나야 healthy가 돼 `up -d`가 길어졌다. 이 레포는 `start_period` 동안 `start_interval`(2~5초)로 자주 검사해 준비되는 즉시 healthy가 된다(Docker 25+ 필요). 이관 이전 루트 compose의 keycloak은 그대로라 롤백 `up -d`는 약 2~3분 걸리지만 실패는 아니다.
 - `docker compose up`은 `db-backup`을 매번 다시 실행해 덤프를 한 벌 더 만듭니다(보관 개수 초과분은 삭제).
 - gateway는 이름으로 keycloak·auth-relay를 찾습니다. 3단계에서 컨테이너가 새로 만들어져도 gateway 재시작 없이 응답했습니다(테스트 서버).
 - 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다(테스트 서버에서 전환 후에도 볼륨 유지 확인). sandol-auth에서 `down -v`는 하지 않습니다.
