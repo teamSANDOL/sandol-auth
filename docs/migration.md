@@ -13,6 +13,8 @@ Keycloak 스택을 루트 compose(`tuk_sandol_team`)에서 이 레포의 독립 
    `.env`에 `COMPOSE_FILE=docker-compose.yml:docker-compose.colocated.yml`(`.env.example` 기본값)이 있는지 확인합니다. 없으면 평범한 `docker compose up -d`가 오버라이드 없이 떠서 keycloak·auth-relay가 루트 네트워크에서 빠집니다. 새 서버 단독 기동 시에는 이 줄을 제거합니다.
 6. 전환 전 기준값을 기록합니다: realm 목록, 사용자 수(`select count(*) from user_entity`), issuer(`/auth/realms/Sandori/.well-known/openid-configuration`의 `issuer`). 개인정보는 기록하지 않고 개수만 봅니다.
 7. 운영 배포 전 확인: (a) 운영 kakao-bot `.env`의 `AUTH_RELAY_URL`이 내부 주소(`http://auth-relay:8000/relay` 또는 인증 서버 `http://<인증IP>:8000/relay`)이고 공개 도메인이 아닌지, (b) gateway 액세스 로그에 `/relay/issue_login_link` 외부 호출이 있었는지(`docker logs sandol-gateway | grep issue_login_link`). 외부 호출이 있으면 이 경로를 막는 루트 변경(TASK-186)을 배포하기 전에 호출자를 먼저 정리한다.
+8. 점검 창 동안 메인 서버 kakao-bot `.env`에 `KC_TOKEN_PURGE_ENABLED=false`를 넣고 kakao-bot을 재시작합니다. issuer 불일치 등으로 `invalid_grant`가 나도 저장된 토큰이 지워지지 않아, 설정만 고치면 복구됩니다. 모든 확인을 마친 뒤 `true`로 되돌리고 다시 재시작합니다(전환·분리 각각, 마지막 단계에 포함).
+9. 전환 전 refresh_token을 받아 둡니다(아래 "refresh_token 갱신 확인"의 1단계). 이 파일은 확인이 끝나면 삭제합니다.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q   # 이 레포에서. 오류 없어야 함
@@ -61,6 +63,8 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q  
    - gateway `/relay/health` 200, kakao-bot 컨테이너에서 `http://auth-relay:8000/relay/health` 200.
    - 백업: `$SANDOL_DATA_DIR/backups-auth/<타임스탬프>/keycloak.dump` 생성, `sandol-auth-db-backup` 컨테이너 `Exited (0)`.
    - Prometheus에서 `up{db="keycloak"}` = 1.
+   - 전환 전에 받아 둔 테스트 계정 refresh_token(offline·online 각각)으로 갱신 → 둘 다 HTTP 200, 새 access_token의 `iss`가 공개 issuer와 같음("refresh_token 갱신 확인" 2단계). 실패하면 kakao-bot `KC_TOKEN_PURGE_ENABLED=false` 상태에서 원인을 고친다.
+6. **마무리**: 확인이 끝나면 kakao-bot `.env`의 `KC_TOKEN_PURGE_ENABLED`를 `true`로 되돌리고 kakao-bot을 재시작하며, 테스트 계정·client·토큰 파일을 지웁니다.
 
 ## 롤백
 
@@ -83,7 +87,7 @@ docker compose up -d
 - gateway는 이름으로 keycloak·auth-relay를 찾습니다. 3단계에서 컨테이너가 새로 만들어져도 gateway 재시작 없이 응답했습니다(테스트 서버).
 - 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다(테스트 서버에서 전환 후에도 볼륨 유지 확인). sandol-auth에서 `down -v`는 하지 않습니다.
 - `prometheus.yaml`의 `postgres-exporter-keycloak:9187`은 colocated에서 `sandol_network`로 풀립니다. Keycloak을 다른 서버로 옮기면 target을 바꿉니다.
-- 새 서버로 옮길 때: 이 레포만 clone하고 단독 기동하되, 기존 데이터는 `pre-split` 덤프(또는 `docker-compose.auth-restore.yml` import)로 복원합니다. 아래 "별도 서버로 분리" 설정을 적용합니다.
+- 새 서버로 옮길 때: 아래 "새 서버로 이전(덤프 → 복원 → 기동)"과 "별도 서버로 분리할 때 설정"을 따릅니다.
 
 ## 별도 서버로 분리할 때 설정 (TASK-186)
 
@@ -113,3 +117,69 @@ docker compose logs --since 2m keycloak | grep -i -E 'forwarded|proxy' | head   
 
 기동 후 확인(인증 서버, 변수 없이): `docker compose exec auth-relay curl -fsS http://localhost:8000/relay/health`, `ss -ltn | grep -E ':(8080|8000|9187)\b'`로 바인딩 주소가 `<인증IP>`(또는 기본 `127.0.0.1`)인지 본다.
 메인 서버 확인: `curl -fsS http://<인증IP>:8000/relay/health`, 공개 `/auth/realms/Sandori/.well-known/openid-configuration`·`/relay/health` 200, 공개 `/relay/issue_login_link` 404, kakao-bot 컨테이너에서 `AUTH_RELAY_URL`의 `/issue_login_link`가 405/422로 도달.
+
+## refresh_token 갱신 확인 (전환·분리 공통)
+
+저장된 refresh_token(특히 `offline_access`)이 재로그인 없이 갱신되는지 **테스트 계정**으로 확인합니다(실제 사용자 토큰은 쓰지 않습니다). `$KC`는 확인할 Keycloak 앞단(공개 `https://<도메인>` 또는 메인 서버 gateway)입니다. 값은 출력하지 않고 파일(권한 600)에만 둡니다.
+
+1. **전환·이전 전**, 기존 Keycloak에서 임시 client·사용자를 만들고 토큰을 받아 둡니다.
+   ```bash
+   kc(){ docker exec keycloak /opt/keycloak/bin/kcadm.sh "$@"; }
+   # 관리자 로그인: kcadm.sh config credentials --server http://localhost:8080/auth --realm master --user <관리자> --password <...>
+   kc create clients -r Sandori -s clientId=tmp-split-test-client -s publicClient=true -s directAccessGrantsEnabled=true -s standardFlowEnabled=false -s enabled=true
+   kc create users -r Sandori -s username=tmp-split-test-user -s enabled=true -s emailVerified=true -s email=tmp-split-test@example.invalid -s 'attributes.fullname=tmp split'
+   kc set-password -r Sandori --username tmp-split-test-user --new-password "<임시 비밀번호>"
+   umask 177
+   for S in 'openid offline_access:offline' 'openid:online'; do
+     curl -s "$KC/auth/realms/Sandori/protocol/openid-connect/token" -d grant_type=password -d client_id=tmp-split-test-client \
+       -d username=tmp-split-test-user --data-urlencode "password=<임시 비밀번호>" --data-urlencode "scope=${S%%:*}" \
+       | python3 -c 'import sys,json;print(json.load(sys.stdin)["refresh_token"],end="")' > rt-${S##*:}.txt
+   done
+   ```
+   - realm의 user profile에서 `fullname`이 필수라 속성을 줘야 합니다(없으면 `error-user-attribute-required`). 다른 필수 속성이 있으면 `kc get users/profile -r Sandori`로 확인합니다.
+   - `offline_access`가 client 기본 scope에 있으면 online 요청도 Offline 토큰이 나옵니다. client의 default-client-scopes에서 `offline_access`를 빼 optional로 옮깁니다(`kc delete clients/<id>/default-client-scopes/<scopeId>`, `kc update clients/<id>/optional-client-scopes/<scopeId>`).
+   - 기존 `.env`의 관리자 비밀번호가 `Invalid user credentials`이면(기존 realm에선 부트스트랩 값이 무시됨) 임시 관리자를 만듭니다: `docker exec -e KC_HTTP_MANAGEMENT_PORT=9001 -e P=<pw> keycloak sh -c '/opt/keycloak/bin/kc.sh bootstrap-admin user --username tmp-split-admin --password:env P --no-prompt'`(관리 포트 9000이 이미 쓰여 `9001` 필요). 이 계정도 마지막에 삭제합니다.
+2. **전환·이전 후**, 같은 파일로 갱신합니다. HTTP 200과 `iss`가 공개 issuer와 같아야 하고, 갱신된 토큰은 파일에 다시 저장합니다.
+   ```bash
+   for T in offline online; do
+     curl -s -o /tmp/r.json -w "$T http=%{http_code} " "$KC/auth/realms/Sandori/protocol/openid-connect/token" \
+       -d grant_type=refresh_token -d client_id=tmp-split-test-client --data-urlencode "refresh_token=$(cat rt-$T.txt)"
+     python3 -c 'import json,base64;j=json.load(open("/tmp/r.json"));p=j["access_token"].split(".")[1];p+="="*(-len(p)%4);print("iss",json.loads(base64.urlsafe_b64decode(p))["iss"]) if "access_token" in j else print("error",j.get("error"))'
+   done; rm -f /tmp/r.json
+   ```
+3. **정리**: 임시 사용자·client(·임시 관리자)를 `kc delete users/<id> -r Sandori`, `kc delete clients/<id> -r Sandori`(관리자는 `-r master`)로 지우고, 사용자 수(`select count(*) from user_entity`)가 전과 같은지 봅니다. `rt-*.txt`는 삭제합니다.
+
+테스트 서버 결과: 같은 서버 전환(단계 A)과 덤프·복원 이전(단계 B)에서 offline·online 모두 갱신 200, `iss` 불변이었습니다(issuer·`KC_PUBLIC_URL`이 같고 DB의 realm·키·세션이 그대로 복원되기 때문). 기존 서버로 롤백한 뒤에도 같은 토큰이 200이었습니다.
+
+## 새 서버로 이전 (덤프 → 복원 → 기동)
+
+테스트 서버에서 임시 볼륨으로 모의한 순서입니다. **덤프 전에 Keycloak을 먼저 정지**합니다(쓰기 중 덤프 방지). 기존 서버 `sandol-auth` 디렉터리 기준:
+
+```bash
+# 1) 기존 서버: Keycloak 정지 → 덤프 (keycloak-db는 켜 둠)
+docker compose stop keycloak auth-relay postgres-exporter-keycloak
+docker exec keycloak-db sh -c 'pg_dump -U "$POSTGRES_USER" -d keycloak -Fc -f /tmp/move.dump'
+docker cp keycloak-db:/tmp/move.dump ./keycloak-move.dump && docker exec keycloak-db rm /tmp/move.dump
+chmod 600 keycloak-move.dump
+scp keycloak-move.dump <새 서버>:~/sandol-auth/        # 사설망으로, 전송 후 양쪽 사본 삭제 계획
+
+# 2) 새 서버: 레포 clone·서브모듈·.env(단독: COMPOSE_FILE 줄 없음, AUTH_BIND_ADDR, KEYCLOAK_EDGE_SUBNET)·sandol-auth-relay/.env·clients.json 준비 후
+docker compose up -d keycloak-db            # 빈 볼륨이 생기고 DB가 healthy 될 때까지 대기
+docker cp keycloak-move.dump keycloak-db:/tmp/restore.dump
+docker exec keycloak-db sh -c 'pg_restore -U "$POSTGRES_USER" -d keycloak --clean --if-exists --exit-on-error /tmp/restore.dump; echo exit=$?'
+docker exec keycloak-db rm /tmp/restore.dump
+docker exec keycloak-db sh -c 'psql -U "$POSTGRES_USER" -d keycloak -tAc "select count(*) from user_entity"'   # 기존 서버 값과 같아야 함
+
+# 3) 새 서버: 전체 기동 (db-backup → keycloak → auth-relay → exporter)
+docker compose up -d
+# keycloak healthy(1~2분) 대기 후 위 "refresh_token 갱신 확인" 2단계, 메인 서버 값 변경(분리 표)
+```
+
+테스트에서 확인한 점(막힌 곳 없음, 아래는 주의):
+- `pg_restore --clean --if-exists --exit-on-error`가 빈 DB에서 오류 없이 exit 0이었고, 롤·소유자는 `KC_DB_USERNAME`을 새 `.env`에서 기존과 같게 두면 문제없었습니다(덤프는 소유자를 이 계정으로 기록).
+- `keycloak_data` 볼륨은 새 빈 볼륨으로 충분했습니다(`transaction-logs`만 생성). 이전할 필요 없음.
+- 사용자 세션(online)·offline 세션도 DB에 있어 그대로 이어졌습니다.
+- **exporter는 복원 후 `pg_up 0`**입니다. `sandol_exporter` 롤은 클러스터 단위라 DB 덤프에 없으므로 새 DB에서 `scripts/create-pg-exporter-role.sh`를 실행해야 합니다. 같은 이유로 `PG_EXPORTER_PASSWORD`를 새 `.env`에 넣습니다.
+- 확장(extension)은 사용하지 않아 복원 문제가 없었습니다.
+
+**롤백(이전 실패 시)**: ① 메인 서버 변수를 원복합니다(`KEYCLOAK_UPSTREAM`·`AUTH_RELAY_UPSTREAM`·`KC_INTERNAL_URL`·kakao-bot `AUTH_RELAY_URL`·prometheus target을 기본값으로, gateway·static-info·meal·kakao-bot 재시작). ② 기존 서버에서 `docker compose up -d`로 sandol-auth를 다시 기동합니다(원래 볼륨을 쓰므로 기존 토큰 그대로 유효, 이전 도중 기존 서버가 쓰기를 받았다면 그 이후 변경은 새 서버에 없음). ③ 새 서버의 sandol-auth는 `docker compose down`(`-v` 금지). 새 서버가 이미 쓰기를 받았다면(로그인 등) 롤백 시 그만큼 기존 서버 DB와 어긋나므로, 이전은 기존 서버 정지 후 바로 전환하고 문제 시 즉시 롤백합니다.
