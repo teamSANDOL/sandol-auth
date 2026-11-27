@@ -82,16 +82,16 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d   # C
 `db-backup`은 `up`할 때마다 `${SANDOL_AUTH_BACKUP_DIR:-${SANDOL_DATA_DIR}/backups-auth}/<UTC 타임스탬프>/keycloak.dump`를 만듭니다. 보관 개수는 `BACKUP_KEEP`(기본 10). 수동 실행: `docker compose run --rm db-backup`.
 realm 단위 export/import는 `docker-compose.auth-bak.yml`(`name: sandol-auth-backup`), `docker-compose.auth-restore.yml`(`name: sandol-auth-restore`)을 사용합니다.
 
-> **경고**: 두 파일은 운영 Keycloak DB 볼륨을 직접 씁니다. 컨테이너 이름을 운영과 같은 `keycloak-db`·`keycloak`으로 두었으므로 운영 컨테이너가 떠 있으면 이름 충돌로 실행이 막힙니다(의도된 안전장치). 실행 전에 운영 `keycloak`·`keycloak-db`를 먼저 멈추세요. 반드시 `-f`로 해당 파일을 지정해 단독으로 실행하고, 끝나면 `down`(`-v` 금지) 후 운영을 다시 올립니다.
+> **경고**: 두 파일은 운영 Keycloak DB 볼륨을 직접 씁니다. 컨테이너 이름을 운영과 같은 `keycloak-db`·`keycloak`으로 두었으므로 운영 컨테이너가 있으면(멈춘 것도 이름을 차지) 이름 충돌로 실행이 막힙니다(의도된 안전장치). 운영 sandol-auth를 `docker compose down`(`-v` 금지)으로 내린 뒤 실행하세요. 반드시 `-f`로 해당 파일을 지정해 단독으로 실행하고, 끝나면 이 작업을 `down`(`-v` 금지)한 뒤 운영 sandol-auth를 다시 `up`합니다.
 
 export/import 디렉터리는 호스트 `${SANDOL_DATA_DIR}/backups-auth/realm-export`를 컨테이너 `/export`에 bind 마운트합니다(`SANDOL_DATA_DIR` 필수). Keycloak은 uid 1000으로 실행되므로 디렉터리를 먼저 만들고 권한을 줍니다.
 
 ```bash
 mkdir -p "$SANDOL_DATA_DIR/backups-auth/realm-export" && sudo chown 1000:0 "$SANDOL_DATA_DIR/backups-auth/realm-export"
-docker compose -f docker-compose.auth-bak.yml up --abort-on-container-exit   # export → 위 디렉터리에 저장
+docker compose -f docker-compose.auth-bak.yml up --abort-on-container-exit --exit-code-from keycloak   # export → 위 디렉터리에 저장
 docker compose -f docker-compose.auth-bak.yml down                            # -v 금지
 # import: export 파일을 같은 디렉터리에 두고
-docker compose -f docker-compose.auth-restore.yml up --abort-on-container-exit
+docker compose -f docker-compose.auth-restore.yml up --abort-on-container-exit --exit-code-from keycloak
 docker compose -f docker-compose.auth-restore.yml down
 ```
 

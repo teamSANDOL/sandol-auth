@@ -1,6 +1,6 @@
 # 경고: 운영 Keycloak DB 볼륨(keycloak_db_data)을 직접 마운트해 realm import를 수행한다.
 # 컨테이너 이름을 운영과 같은 keycloak-db·keycloak으로 두었다. 운영 컨테이너가 떠 있으면 이름 충돌로 실행이 막힌다(의도된 안전장치).
-# 실행 전에 운영 keycloak·keycloak-db를 먼저 멈춰야 한다(같은 볼륨 동시 사용 방지).
+# 멈춘 컨테이너도 이름을 차지하므로, 실행 전에 운영 sandol-auth를 `docker compose down`(-v 금지)으로 내리고 끝나면 다시 up 한다.
 # 입력는 호스트 ${SANDOL_DATA_DIR}/backups-auth/realm-export 에 있다. 디렉터리를 먼저 만들고 uid 1000(keycloak)이 읽을 수 있어야 한다(README 참고).
 # 사용: docker compose -f docker-compose.auth-restore.yml up  (종료 후 down, -v 금지)
 name: sandol-auth-restore
