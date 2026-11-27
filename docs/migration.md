@@ -5,7 +5,7 @@ Keycloak 스택을 루트 compose(`tuk_sandol_team`)에서 이 레포의 독립 
 
 ## 사전 준비
 
-0. **엔진 버전**: `docker version --format '{{.Server.Version}}'`로 엔진 25 이상인지 확인합니다. 이 레포 compose는 healthcheck `start_interval`을 쓰며, compose는 이 키를 엔진에 그대로 넘깁니다(클라이언트에서 막지 않음). 25 미만 엔진에서는 키가 무시되거나 생성 오류가 날 수 있어(미검증), 미만이면 엔진을 올리거나 `start_interval` 줄을 제거하고(기동이 keycloak 90초·auth-relay 60초 늦어짐) 진행합니다.
+0. **엔진 버전**: 이 레포 compose는 healthcheck `start_interval`을 쓰지 않으므로 엔진 버전 제약이 없습니다.
 1. 루트 레포를 `git fetch`만 해 둡니다. **`pull`·checkout은 하지 않습니다**(Keycloak 서비스가 제거된 compose가 작업 트리에 들어오면 아래 2단계가 컨테이너 이름이 아니라 서비스 이름이라 실패합니다). 전환 4단계에서 받습니다.
 2. 이 레포를 clone하고 서브모듈을 초기화합니다(README 참고).
 3. `.env`를 만듭니다. 루트 `.env`에서 `KC_DB_USERNAME`, `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD`, `PG_EXPORTER_PASSWORD`, `SANDOL_DATA_DIR`, `BACKUP_KEEP`를 같은 값으로 복사하고 `KC_PUBLIC_URL=https://<SERVICE_DOMAIN>/auth`를 추가합니다. `COMPOSE_PROJECT_NAME`은 복사하지 않습니다.
@@ -88,7 +88,7 @@ docker compose up -d
 
 ## 알아둘 점
 
-- healthcheck 기동 속도(TASK-195): Docker는 첫 검사를 `interval` 뒤에 실행한다. keycloak(1m30s)·auth-relay(60s)는 기동 후 각각 90초·60초가 지나야 healthy가 돼 `up -d`가 길어졌다. 이 레포는 `start_period` 동안 `start_interval`(2~5초)로 자주 검사해 준비되는 즉시 healthy가 된다(Docker 25+ 필요). 이관 이전 루트 compose의 keycloak은 그대로라 롤백 `up -d`는 약 2~3분 걸리지만 실패는 아니다.
+- healthcheck 기동 속도(TASK-195): Docker는 첫 검사를 `interval` 뒤에 실행한다. keycloak(1m30s)·auth-relay(60s)는 기동 후 각각 90초·60초가 지나야 healthy가 돼 `up -d`가 길어졌다. `start_interval`은 Docker 25 미만 호환을 위해 쓰지 않으므로 healthy 판정은 위 `interval` 주기를 따른다. 이관 이전 루트 compose의 keycloak은 그대로라 롤백 `up -d`는 약 2~3분 걸리지만 실패는 아니다.
 - `docker compose up`은 `db-backup`을 매번 다시 실행해 덤프를 한 벌 더 만듭니다(보관 개수 초과분은 삭제).
 - gateway는 이름으로 keycloak·auth-relay를 찾습니다. 3단계에서 컨테이너가 새로 만들어져도 gateway 재시작 없이 응답했습니다(테스트 서버).
 - 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다(테스트 서버에서 전환 후에도 볼륨 유지 확인). sandol-auth에서 `down -v`는 하지 않습니다.

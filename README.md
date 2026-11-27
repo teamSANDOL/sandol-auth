@@ -100,6 +100,6 @@ docker compose -f docker-compose.auth-restore.yml down
 ## 주의
 
 - `docker compose down -v`는 Keycloak 데이터를 지울 수 있으므로 쓰지 않습니다.
-- Docker 엔진 25 이상이 필요합니다(healthcheck `start_interval`). `docker version`으로 확인하세요.
+- healthcheck `start_interval`은 쓰지 않아 Docker 엔진 버전 제약이 없습니다.
 - colocated 구성에서는 이 프로젝트의 컨테이너가 루트 `sandol_network`에 붙어 있어, 루트에서 `docker compose down`을 하면 네트워크 삭제(`network sandol_network ... has active endpoints`)에서 실패합니다. 루트를 내려야 하면 순서는 ① 이 레포에서 `docker compose -f docker-compose.yml -f docker-compose.colocated.yml down`(`-v` 금지) → ② 루트 `down` → ③ 이 레포 `up -d`(healthy 대기) → ④ 루트 `up -d`입니다(meal 등은 기동 시 Keycloak을 확인).
 - 테스트 도메인, 서버 IP, 비밀값은 커밋하지 않습니다.
