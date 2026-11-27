@@ -1,0 +1,66 @@
+# 경고: 운영 Keycloak DB 볼륨(keycloak_db_data)을 직접 마운트해 realm import를 수행한다.
+# 컨테이너 이름을 운영과 같은 keycloak-db·keycloak으로 두었다. 운영 컨테이너가 떠 있으면 이름 충돌로 실행이 막힌다(의도된 안전장치).
+# 멈춘 컨테이너도 이름을 차지하므로, 실행 전에 운영 sandol-auth를 `docker compose down`(-v 금지)으로 내리고 끝나면 다시 up 한다.
+# 입력는 호스트 ${SANDOL_DATA_DIR}/backups-auth/realm-export 에 있다. 디렉터리를 먼저 만들고 uid 1000(keycloak)이 읽을 수 있어야 한다(README 참고).
+# 사용: docker compose -f docker-compose.auth-restore.yml up  (종료 후 down, -v 금지)
+name: sandol-auth-restore
+
+services:
+  keycloak-db:
+    container_name: keycloak-db
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: ${KC_DB_USERNAME}
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD}
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d keycloak -U ${KC_DB_USERNAME}"]
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 20s
+
+  keycloak:
+    container_name: keycloak
+    image: quay.io/keycloak/keycloak:26.8.1
+    command:
+      [
+        "import",
+        "--dir",
+        "/export",
+        "--override",
+        "true"
+      ]
+    environment:
+      KC_FEATURES: token-exchange:v1,admin-fine-grained-authz:v1
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: ${KC_DB_USERNAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    volumes:
+      - type: bind
+        source: ${SANDOL_DATA_DIR:?SANDOL_DATA_DIR 필요}/backups-auth/realm-export
+        target: /export
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./sandol_user_service/keycloak/providers/apple-identity-provider-1.17.0-sandol.1.jar
+        target: /opt/keycloak/providers/apple-identity-provider-1.17.0-sandol.1.jar
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      disable: true
+
+volumes:
+  keycloak_db_data:
+    name: ${KEYCLOAK_DB_VOLUME:-sandol_team_keycloak_db_data}

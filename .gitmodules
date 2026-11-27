@@ -1,0 +1,7 @@
+[submodule "sandol_user_service"]
+	path = sandol_user_service
+	url = git@github.com:teamSANDOL/sandol_user_service.git
+	branch = main
+[submodule "sandol-auth-relay"]
+	path = sandol-auth-relay
+	url = git@github.com:teamSANDOL/sandol-auth-relay.git
