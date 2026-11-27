@@ -5,7 +5,8 @@ Keycloak 스택을 루트 compose(`tuk_sandol_team`)에서 이 레포의 독립 
 
 ## 사전 준비
 
-1. 루트 레포에서 이 이관이 반영된 커밋(Keycloak 서비스가 제거된 compose)을 받아 둡니다. 아직 `up` 하지 않습니다.
+0. **엔진 버전**: `docker version --format '{{.Server.Version}}'`로 엔진 25 이상인지 확인합니다. 이 레포 compose는 healthcheck `start_interval`을 쓰며, compose는 이 키를 엔진에 그대로 넘깁니다(클라이언트에서 막지 않음). 25 미만 엔진에서는 키가 무시되거나 생성 오류가 날 수 있어(미검증), 미만이면 엔진을 올리거나 `start_interval` 줄을 제거하고(기동이 keycloak 90초·auth-relay 60초 늦어짐) 진행합니다.
+1. 루트 레포를 `git fetch`만 해 둡니다. **`pull`·checkout은 하지 않습니다**(Keycloak 서비스가 제거된 compose가 작업 트리에 들어오면 아래 2단계가 컨테이너 이름이 아니라 서비스 이름이라 실패합니다). 전환 4단계에서 받습니다.
 2. 이 레포를 clone하고 서브모듈을 초기화합니다(README 참고).
 3. `.env`를 만듭니다. 루트 `.env`에서 `KC_DB_USERNAME`, `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD`, `PG_EXPORTER_PASSWORD`, `SANDOL_DATA_DIR`, `BACKUP_KEEP`를 같은 값으로 복사하고 `KC_PUBLIC_URL=https://<SERVICE_DOMAIN>/auth`를 추가합니다. `COMPOSE_PROJECT_NAME`은 복사하지 않습니다.
 4. 이름을 확인해 `.env`에 반영합니다: `docker volume ls | grep keycloak`(`KEYCLOAK_DB_VOLUME`, `KEYCLOAK_DATA_VOLUME`), `docker network ls | grep sandol`(`SANDOL_NETWORK_NAME`).
@@ -26,23 +27,25 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q  
 
 1. **덤프**: 루트 변경을 적용하기 전에 Keycloak DB를 덤프합니다.
    ```bash
-   set -euo pipefail
-   : "${SANDOL_DATA_DIR:?SANDOL_DATA_DIR 필요}"
-   DEST="$SANDOL_DATA_DIR/backups-auth/pre-split"
-   mkdir -p "$DEST"
-   docker exec keycloak-db sh -c 'pg_dump -U "$POSTGRES_USER" -d keycloak -Fc -f /tmp/pre-split.dump'
-   docker cp keycloak-db:/tmp/pre-split.dump "$DEST/keycloak.dump"
-   docker exec keycloak-db rm /tmp/pre-split.dump
-   # 검증: 목차를 읽을 수 있고 크기가 0이 아니어야 한다
-   docker run --rm -v "$DEST:/b:ro" postgres:16-alpine pg_restore -l /b/keycloak.dump | wc -l
-   test -s "$DEST/keycloak.dump" && ls -l "$DEST/keycloak.dump"
+   # 서브셸로 감싸 실패 시 현재 셸이 종료되지 않게 한다(대화형 셸에서 set -e 금지)
+   (
+     set -euo pipefail
+     : "${SANDOL_DATA_DIR:?SANDOL_DATA_DIR 필요}"
+     DEST="$SANDOL_DATA_DIR/backups-auth/pre-split"
+     mkdir -p "$DEST"
+     docker exec keycloak-db sh -c 'pg_dump -U "$POSTGRES_USER" -d keycloak -Fc -f /tmp/pre-split.dump'
+     docker cp keycloak-db:/tmp/pre-split.dump "$DEST/keycloak.dump"
+     docker exec keycloak-db rm /tmp/pre-split.dump
+     # 검증: 목차를 읽을 수 있고 크기가 0이 아니어야 한다
+     docker run --rm -v "$DEST:/b:ro" postgres:16-alpine pg_restore -l /b/keycloak.dump | wc -l
+     test -s "$DEST/keycloak.dump" && ls -l "$DEST/keycloak.dump"
+   ) && echo DUMP_OK || echo DUMP_FAILED
    ```
    실패하면 다음 단계로 넘어가지 않습니다. 롤백에서 쓰는 파일도 이 경로(`$SANDOL_DATA_DIR/backups-auth/pre-split/keycloak.dump`)입니다.
-2. **루트의 Keycloak 컨테이너 정지·삭제**(볼륨 유지, `-v` 금지). 변경 적용 전의 루트 compose(이전 커밋)로 실행합니다.
+2. **루트의 Keycloak 컨테이너 정지·삭제**(볼륨 유지, `-v` 금지). compose 파일에 의존하지 않도록 컨테이너 이름으로 실행합니다(루트 compose에 keycloak 서비스가 있든 없든 동작).
    ```bash
-   cd ~/tuk_sandol_team
-   docker compose stop keycloak auth-relay postgres-exporter-keycloak keycloak-db
-   docker compose rm -f keycloak auth-relay postgres-exporter-keycloak keycloak-db
+   docker stop keycloak auth-relay postgres-exporter-keycloak keycloak-db
+   docker rm keycloak auth-relay postgres-exporter-keycloak keycloak-db   # docker rm -v, docker volume rm 금지
    docker volume ls | grep keycloak     # 두 볼륨이 남아 있어야 함
    ```
 3. **sandol-auth를 colocated로 기동**: 컨테이너 이름이 같아 2단계 전에는 충돌합니다. Keycloak이 healthy가 될 때까지 약 1~2분 걸립니다(`db-backup`이 먼저 `keycloak.dump`를 만듭니다).
@@ -74,12 +77,12 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q  
 cd ~/sandol-auth
 docker compose -f docker-compose.yml -f docker-compose.colocated.yml down      # -v 금지
 cd ~/tuk_sandol_team
-git checkout <이관 이전 커밋>              # Keycloak 서비스가 있는 docker-compose.yml. amqp healthcheck 수정(TASK-195)이 들어 있는 커밋이어야 한다(아래 주의)
+git checkout <롤백 대상 커밋>              # Keycloak 서비스가 있는 docker-compose.yml. amqp healthcheck 수정(TASK-195)이 들어 있는 커밋(아래 주의)
 git submodule update --init
 docker compose up -d
 ```
 
-**롤백 대상 커밋 주의(TASK-195)**: 이관 이전 compose의 amqp healthcheck(`rabbitmq-diagnostics` 3회 호출, interval 10s·timeout 5s·start_period 없음)는 호출마다 Erlang VM을 띄워 유휴에도 약 2초, 서버 부하가 높으면(keycloak·DB 기동 중 load 8 이상) 5초를 넘겨 timeout이 된다. 5회 연속이면 amqp가 unhealthy가 되고 `docker compose up -d`가 `dependency failed to start: container amqp is unhealthy`로 중단돼 gateway·auth-relay가 만들어지지 않는다(테스트 서버에서 부하를 주어 재현). 수정은 amqp healthcheck를 TCP 점검(5672·15692)으로 바꾼 커밋이며, 롤백 대상은 이를 포함한 main 기반 커밋이어야 한다. 그렇지 않은 커밋으로 롤백해 중단되면 `--no-deps` 없이 amqp가 healthy가 된 뒤 `docker compose up -d`를 한 번 더 실행하면 된다(멱등).
+**롤백 대상 커밋 주의(TASK-195)**: 이관 이전 compose의 amqp healthcheck(`rabbitmq-diagnostics` 3회 호출, interval 10s·timeout 5s·start_period 없음)는 호출마다 Erlang VM을 띄워 유휴에도 약 2초, 서버 부하가 높으면(keycloak·DB 기동 중 load 8 이상) 5초를 넘겨 timeout이 된다. 5회 연속이면 amqp가 unhealthy가 되고 `docker compose up -d`가 `dependency failed to start: container amqp is unhealthy`로 중단돼 gateway·auth-relay가 만들어지지 않는다(테스트 서버에서 부하를 주어 재현). 수정은 amqp healthcheck를 TCP 점검(5672·15692)으로 바꾼 별도 PR(`teamSANDOL/tuk_sandol_team`, 브랜치 `fix/compose-startup-healthcheck-main(TASK-195)`)이며, 이 PR이 Keycloak 분리 PR보다 먼저 main에 병합된다. 따라서 **롤백 대상은 그 amqp PR의 병합 커밋(= 분리 PR 병합 직전의 main)**이다. 찾는 방법: 루트에서 `git fetch origin && git log --oneline --first-parent -5 origin/main`으로 분리 PR 병합 커밋을 찾고, 그 부모(`git rev-parse <분리 PR 병합 커밋>^1`)가 대상이다. 분리 PR이 아직 병합 전이면 `origin/main` 자체가 대상이다. `git merge-base --is-ancestor <대상> origin/main`과 대상 커밋의 `docker-compose.yml`에 amqp TCP 점검이 있는지(`git show <대상>:docker-compose.yml | grep -A8 'amqp:'`) 확인한다. 그렇지 않은 커밋으로 롤백해 중단되면 `--no-deps` 없이 amqp가 healthy가 된 뒤 `docker compose up -d`를 한 번 더 실행하면 된다(멱등).
 
 이후 위 5단계 확인 항목을 같은 방식으로 확인합니다. DB가 손상된 경우에만 `$SANDOL_DATA_DIR/backups-auth/pre-split/keycloak.dump`로 복원합니다(`pg_restore --clean --if-exists`).
 
@@ -90,6 +93,7 @@ docker compose up -d
 - gateway는 이름으로 keycloak·auth-relay를 찾습니다. 3단계에서 컨테이너가 새로 만들어져도 gateway 재시작 없이 응답했습니다(테스트 서버).
 - 루트 compose에서 볼륨 정의를 지워도 실제 볼륨은 삭제되지 않습니다(테스트 서버에서 전환 후에도 볼륨 유지 확인). sandol-auth에서 `down -v`는 하지 않습니다.
 - `prometheus.yaml`의 `postgres-exporter-keycloak:9187`은 colocated에서 `sandol_network`로 풀립니다. Keycloak을 다른 서버로 옮기면 target을 바꿉니다.
+- colocated 구성에서는 이 프로젝트 컨테이너가 루트 `sandol_network`에 붙어 있어 루트에서 `docker compose down`을 하면 네트워크 삭제에서 실패합니다. 루트를 내려야 하면 ① 이 레포 `docker compose -f docker-compose.yml -f docker-compose.colocated.yml down`(`-v` 금지) → ② 루트 `down` → ③ 이 레포 `up -d`(healthy 대기) → ④ 루트 `up -d` 순서입니다(meal-service가 기동 시 Keycloak을 확인).
 - 새 서버로 옮길 때: 아래 "새 서버로 이전(덤프 → 복원 → 기동)"과 "별도 서버로 분리할 때 설정"을 따릅니다.
 
 ## 별도 서버로 분리할 때 설정 (TASK-186)
