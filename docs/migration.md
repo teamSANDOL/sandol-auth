@@ -109,7 +109,7 @@ docker compose up -d
 | 메인 | 루트 `.env` | `KEYCLOAK_UPSTREAM` | `<인증IP>:8080` |
 | 메인 | 루트 `.env` | `AUTH_RELAY_UPSTREAM` | `<인증IP>:8000` |
 | 메인 | 루트 `.env` | `KC_INTERNAL_URL` | `http://<인증IP>:8080/auth` (static-info·meal 내부 호출) |
-| 메인 | kakao-bot `.env` | `AUTH_RELAY_URL` | `http://<인증IP>:8000/relay` (relay 직접 호출, gateway 경유 아님) |
+| 메인 | kakao-bot `.env` | `AUTH_RELAY_URL` | 사설망 직접(`http://<인증IP>:8000/relay`) 또는 공개 HTTPS(`https://<인증 도메인>/relay`, 서명 필수: kakao-bot `RELAY_ISSUE_LINK_SECRET` = relay `SANDOL_KAKAO_BOT__ISSUE_LINK_SECRET`, relay `ISSUE_LINK_AUTH_MODE=enforce`, gateway의 `/relay/issue_login_link` 차단 해제 후) |
 | 메인 | prometheus 설정 | exporter target | `postgres-exporter-keycloak:9187` → `<인증IP>:9187` |
 
 방화벽(인증 서버): 8080·8000·9187은 **메인 서버 IP만 허용**. 9000(관리·health)과 DB 5432는 publish하지 않으며 열지 않는다.
@@ -124,7 +124,7 @@ docker compose logs --since 2m keycloak | grep -i -E 'forwarded|proxy' | head   
 여기서 보인 주소(NAT 뒤라면 NAT 장비 주소)를 `/32`로 쓴다. 첫 기동 때는 기본값(신뢰 안 됨)이므로, 값을 `.env`에 넣은 뒤 `docker compose up -d`로 keycloak을 다시 만든다. 틀리면 Keycloak이 X-Forwarded-*를 무시한다. 다만 `KC_HOSTNAME`이 전체 URL이라 **issuer는 신뢰 여부와 무관하게 바뀌지 않아** `.well-known`의 `issuer`로는 구분되지 않는다(테스트 서버에서 확인). 구분은 Keycloak에 직접 `X-Forwarded-Proto: https` 헤더를 붙여 `/auth/realms/Sandori/protocol/openid-connect/auth?client_id=<client>&response_type=code&scope=openid&code_challenge=<S256 값>&code_challenge_method=S256&redirect_uri=<등록된 URI>`를 호출하고 응답 `Set-Cookie`에 `Secure;SameSite=None`이 붙는지로 한다(신뢰되지 않으면 `Secure`가 없다). Keycloak 로그에 `forwarded|proxy|trusted` 경고가 없어야 한다.
 
 기동 후 확인(인증 서버, 변수 없이): `docker compose exec auth-relay curl -fsS http://localhost:8000/relay/health`, `ss -ltn | grep -E ':(8080|8000|9187)\b'`로 바인딩 주소가 `<인증IP>`(또는 기본 `127.0.0.1`)인지 본다.
-메인 서버 확인: `curl -fsS http://<인증IP>:8000/relay/health`, 공개 `/auth/realms/Sandori/.well-known/openid-configuration`·`/relay/health` 200, 공개 `/relay/issue_login_link` 404, kakao-bot 컨테이너에서 `AUTH_RELAY_URL`의 `/issue_login_link`가 405/422로 도달.
+메인 서버 확인: `curl -fsS http://<인증IP>:8000/relay/health`, 공개 `/auth/realms/Sandori/.well-known/openid-configuration`·`/relay/health` 200, 공개 `/relay/issue_login_link`는 차단 중이면 404·차단 해제 후면 미서명 요청 401, kakao-bot 컨테이너에서 `AUTH_RELAY_URL`의 `/issue_login_link`가 405/422로 도달.
 
 ## refresh_token 갱신 확인 (전환·분리 공통)
 
